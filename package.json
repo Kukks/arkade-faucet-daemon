@@ -4,6 +4,7 @@
   "description": "Internal Node service that holds an Arkade wallet and dispenses funds on behalf of a faucet backend.",
   "type": "module",
   "engines": { "node": ">=24" },
+  "packageManager": "pnpm@11.6.0",
   "scripts": {
     "start": "node --env-file-if-exists=.env index.js",
     "test": "node --test",
