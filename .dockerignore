@@ -1,0 +1,11 @@
+node_modules
+.env
+.env.sample
+*.sqlite
+*.sqlite-shm
+*.sqlite-wal
+.git
+.github
+*.test.js
+README.md
+LICENSE

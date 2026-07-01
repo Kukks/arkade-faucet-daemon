@@ -1,0 +1,24 @@
+{
+  "name": "arkade-faucet-daemon",
+  "version": "0.1.0",
+  "description": "Internal Node service that holds an Arkade wallet and dispenses funds on behalf of a faucet backend.",
+  "type": "module",
+  "engines": { "node": ">=24" },
+  "scripts": {
+    "start": "node --env-file-if-exists=.env index.js",
+    "test": "node --test",
+    "gen-mnemonic": "node gen-mnemonic.js"
+  },
+  "dependencies": {
+    "@arkade-os/sdk": "latest",
+    "eventsource": "latest"
+  },
+  "devDependencies": {
+    "@scure/bip39": "^1.3.0"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Kukks/arkade-faucet-daemon.git"
+  },
+  "license": "MIT"
+}
