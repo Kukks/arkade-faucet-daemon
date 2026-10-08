@@ -47,6 +47,8 @@ export async function initWallet(config) {
   const swaps = createSwapClient({ wallet, repository: new SQLiteAssetSwapRepository(db) });
   // The router's availability check never fetches markets; without a warm snapshot the swap rails stay hidden.
   await swaps.markets().catch((e) => console.warn(`swap market discovery failed: ${e.message}`));
+  // Touching ready restores persisted swaps and resumes their claims and refunds after a restart.
+  swaps.ready.catch((e) => console.warn(`swap restore failed: ${e.message}`));
   return {
     wallet,
     router: createSwapPaymentRouter(wallet, swaps, { claimFeeRateSatVb: config.claimFeeRateSatVb }),
@@ -98,6 +100,15 @@ const UNRECOGNIZED =
   "Paste an Arkade address (tark1…), a bitcoin address, a BOLT11 invoice, a Lightning address or a bitcoin: URI.";
 
 const fail = (status, message) => Object.assign(new Error(message), { status });
+const tooMuch = (asked, max) => fail(400, `This destination asks for ${asked} sats, more than the ${max} you entered.`);
+
+function within(ms, promise, message) {
+  let timer;
+  const expired = new Promise((_, reject) => {
+    timer = setTimeout(() => reject(new Error(message)), ms);
+  });
+  return Promise.race([promise, expired]).finally(() => clearTimeout(timer));
+}
 
 function invoiceSats(invoice) {
   try {
@@ -126,26 +137,28 @@ export async function fetchLightningRange(network, fetchFn = fetch) {
   return `${fmt(m.min_quote_amount)}–${fmt(m.max_quote_amount)}`;
 }
 
-export function createSender({ router, lightningRange, waitMs = 8000 }) {
+export function createSender({ router, lightningRange, isMainnet = false, routeMs = 6000, waitMs = 8000 }) {
   return async function send({ address, sats }) {
     const pasted = String(address ?? "").trim().replace(/^"|"$/g, "");
     // QR codes upper-case invoices; bech32 is case-insensitive.
     const raw = /^(lightning:)?ln/i.test(pasted) ? pasted.toLowerCase() : pasted;
     const invoice = invoiceTarget(raw);
     if (!invoice && !arkTarget(raw) && !btcTarget(raw)) throw fail(400, UNRECOGNIZED);
+    // The SDK classifies addresses of any network, and the collaborative exit would pay a mainnet one.
+    if ([btcTarget(raw), arkTarget(raw)].some((t) => t && /^(bc1|[13]|ark1)/i.test(t) !== isMainnet)) {
+      throw fail(400, "That destination is for another network.");
+    }
     const max = Number(sats);
     if (!(Number.isSafeInteger(max) && max > 0)) throw fail(400, "Enter an amount in sats.");
     const pinned = BIP21.amountSats(raw) ?? (invoice && invoiceSats(invoice));
-    if (pinned > max) {
-      throw fail(400, `This destination asks for ${pinned} sats, more than the ${max} you entered.`);
-    }
+    if (pinned > max) throw tooMuch(pinned, max);
     // The lightning rail refuses an explicit amount beside an amount-bearing invoice, even an equal one.
     const options = await router.options({ raw, amount: pinned === undefined ? max : undefined });
     let q, failure;
     // A rail whose quote fails (a solver at its exposure cap, say) falls through to the next one.
     for (const option of options) {
       try {
-        q = await option.quote();
+        q = await within(routeMs, option.quote(), "the solver didn't answer in time");
         break;
       } catch (e) {
         failure = e;
@@ -158,6 +171,8 @@ export function createSender({ router, lightningRange, waitMs = 8000 }) {
     }
     // Nothing has moved before send(), so every failure up to here is a 4xx.
     if (!q) throw fail(400, `Can't pay this destination: ${failure?.message ?? "no route"}`);
+    // A URI's amount= can understate the invoice it carries; the quote is what would be paid.
+    if (q.amount > max) throw tooMuch(q.amount, max);
     try {
       const handle = await q.send();
       const settled = handle.settled();

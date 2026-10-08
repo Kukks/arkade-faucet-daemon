@@ -62,21 +62,24 @@ const INVOICE_21K = "lntbs210u1p4v0akwpp5y6mjspm2q4x0s6hrcl9kp49t4lthle5eu5sey9k
 const INVOICE_ANY = "lntbs1p4v0ak6pp5d22447fc026ehwgjk4smmyufj9m9zaeveymgpqztk4ml9mv2jzkqdqqcqzzsxqyz5vqsp59m5qfml256wpjnylse7a5jtx9kv2uxrshsupgyvsdyz49003pv6q9qxpqysgq7eh34tuju4mawsng34haasj0wwcehu3r8xaql4r68fljfgysmkfhevc00fkq0m7f50ze642eul2uxmtywljl4at6dnxguky7qgpyj4qpmjhalj";
 
 function fakeRouter({ rails = [{ railId: "ark" }], status = "settled", settled } = {}) {
-  const seen = [];
-  return {
-    seen,
+  const router = {
+    seen: [],
+    sent: 0,
     options: async (req) => {
-      seen.push(req);
-      return rails.map(({ railId, fail }) => ({
+      router.seen.push(req);
+      return rails.map(({ railId, fail, hang }) => ({
         railId,
         quote: async () => {
+          if (hang) return new Promise(() => {});
           if (fail) throw fail;
           const done = settled ?? (async () => ({ railId, txid: "tx1" }));
-          return { railId, amount: req.amount ?? 21000, fee: 0, send: async () => ({ status, settled: done }) };
+          const send = async () => { router.sent++; return { status, settled: done }; };
+          return { railId, amount: req.amount ?? 21000, fee: 0, send };
         },
       }));
     },
   };
+  return router;
 }
 const sender = (router, opts = {}) =>
   createSender({ router, lightningRange: async () => "1,000–25,000", ...opts });
@@ -139,6 +142,34 @@ test("a failing rail falls through to the next; when all fail nothing moved, so 
     status: 400,
     message: "Can't pay this destination: Invalid checksum",
   });
+});
+
+test("a quote for more than sats is refused unsent, whatever the URI's own amount= claims", async () => {
+  const router = fakeRouter({ rails: [{ railId: "lightning" }] });
+  await assert.rejects(sender(router)({ address: `bitcoin:${BTC}?amount=0.00000001&lightning=${INVOICE_21K}`, sats: 1 }), {
+    status: 400,
+    message: "This destination asks for 21000 sats, more than the 1 you entered.",
+  });
+  assert.equal(router.sent, 0);
+});
+
+test("a rail that doesn't answer in time falls through; alone it is a 400", async () => {
+  const fallback = sender(fakeRouter({ rails: [{ railId: "onchain-swap", hang: true }, { railId: "onchain" }] }), { routeMs: 5 });
+  assert.equal((await fallback({ address: BTC, sats: 20000 })).rail, "onchain");
+  const silent = sender(fakeRouter({ rails: [{ railId: "lightning", hang: true }] }), { routeMs: 5 });
+  await assert.rejects(silent({ address: INVOICE_21K, sats: 50000 }), {
+    status: 400,
+    message: "Lightning via Arkade swap can't pay this invoice (the solver didn't answer in time). Use the Lightning tab instead.",
+  });
+});
+
+test("a destination on another network is refused before routing", async () => {
+  const router = fakeRouter();
+  const arkMainnet = new ArkAddress(new Uint8Array(32).fill(1), new Uint8Array(32).fill(2), "ark").encode();
+  for (const address of ["bc1qw508d6qejxtdg4y5r3zarvary0c5xw7kv8f3t4", "1BoatSLRHtKNngkdXEeobR76b53LETtpyT", arkMainnet]) {
+    await assert.rejects(sender(router)({ address, sats: 1000 }), { status: 400, message: "That destination is for another network." });
+  }
+  assert.equal(router.seen.length, 0);
 });
 
 test("payment failures map to the status faucet-rs acts on", async () => {

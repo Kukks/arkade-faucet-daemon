@@ -12,7 +12,7 @@ if (config.internalToken) log("shared-secret gate ENABLED on POST /send");
 const { network } = await wallet.getArkadeInfo();
 startServer({
   config,
-  send: createSender({ router, lightningRange: () => fetchLightningRange(network) }),
+  send: createSender({ router, lightningRange: () => fetchLightningRange(network), isMainnet: config.isMainnet }),
   getAvailable: async () => (await wallet.getBalance()).available,
 });
 
