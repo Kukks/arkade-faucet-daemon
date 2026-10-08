@@ -1,6 +1,8 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { dispense, shouldReplenish, createReplenisher } from "./arkade.js";
+import { ArkAddress } from "@arkade-os/sdk";
+import { SwapPaymentFailedError } from "@arkade-os/swap";
+import { dispense, shouldReplenish, createReplenisher, createSender, fetchLightningRange } from "./arkade.js";
 
 test("dispense rejects non-positive and over-cap amounts", async () => {
   const wallet = { send: async () => "txid" };
@@ -65,4 +67,97 @@ test("replenisher tick is single-flight (no overlap)", async () => {
   });
   await Promise.all([r.tick(), r.tick(), r.tick()]);
   assert.equal(maxActive, 1);
+});
+
+const ARK = new ArkAddress(new Uint8Array(32).fill(1), new Uint8Array(32).fill(2), "tark").encode();
+const BTC = "tb1qw508d6qejxtdg4y5r3zarvary0c5xw7kxpjzsx";
+// Minted on mutinynet: 21,000 sats, and amountless.
+const INVOICE_21K = "lntbs210u1p4v0akwpp5y6mjspm2q4x0s6hrcl9kp49t4lthle5eu5sey9kqy82cfn3qy4ssdqqcqzzsxqyz5vqsp5myh3czujrt5egq0mruyynf8rlt9uhz92pcfwau3u0f7apgf46cqq9qxpqysgqzvtq8ps7hm33663qcpydka3vtjyvjkkapy45e0u6qhq9vyqc4j6qgf29aq2xx5c5pwrw8xqjudkgqjeh58z7c4h4mz2tzngfhvv6z5qpmjjlv4";
+const INVOICE_ANY = "lntbs1p4v0ak6pp5d22447fc026ehwgjk4smmyufj9m9zaeveymgpqztk4ml9mv2jzkqdqqcqzzsxqyz5vqsp59m5qfml256wpjnylse7a5jtx9kv2uxrshsupgyvsdyz49003pv6q9qxpqysgq7eh34tuju4mawsng34haasj0wwcehu3r8xaql4r68fljfgysmkfhevc00fkq0m7f50ze642eul2uxmtywljl4at6dnxguky7qgpyj4qpmjhalj";
+
+function fakeRouter({ railId = "ark", status = "settled", settled = async () => ({ railId, txid: "tx1" }), fail } = {}) {
+  const seen = [];
+  return {
+    seen,
+    route: async (req) => {
+      seen.push(req);
+      if (fail) throw fail;
+      return { railId, amount: req.amount ?? 21000, fee: 0, send: async () => ({ status, settled }) };
+    },
+  };
+}
+const sender = (router, opts = {}) =>
+  createSender({ router, lightningRange: async () => "1,000–25,000", ...opts });
+
+test("send reports the routed rail's result", async () => {
+  assert.deepEqual(await sender(fakeRouter())({ address: ARK, sats: 500 }),
+    { rail: "ark", status: "settled", amount: 500, fee: 0, txid: "tx1", swapId: undefined });
+});
+
+test("unrecognized destinations and bad amounts are refused before routing", async () => {
+  const router = fakeRouter();
+  const send = sender(router);
+  for (const address of ["hello", "alice@example.com", "", undefined]) {
+    await assert.rejects(send({ address, sats: 5 }), { status: 400, message: /^Paste an Arkade address/ });
+  }
+  for (const sats of [undefined, null, 0, 1.5, -3, "abc"]) {
+    await assert.rejects(send({ address: ARK, sats }), { status: 400, message: "Enter an amount in sats." });
+  }
+  await assert.rejects(send({ address: INVOICE_21K, sats: 5000 }), {
+    status: 400,
+    message: "This destination asks for 21000 sats, more than the 5000 you entered.",
+  });
+  assert.equal(router.seen.length, 0);
+});
+
+test("a destination's own amount is paid when it fits under sats", async () => {
+  const router = fakeRouter();
+  const send = sender(router);
+  await send({ address: INVOICE_21K, sats: 50000 });
+  await send({ address: `LIGHTNING:${INVOICE_21K.toUpperCase()}`, sats: 50000 });
+  await send({ address: `bitcoin:${BTC}?amount=0.0001`, sats: 50000 });
+  await send({ address: INVOICE_ANY, sats: 777 });
+  await send({ address: `  "${ARK}"  `, sats: 10 });
+  assert.deepEqual(router.seen.map((r) => r.amount), [undefined, undefined, undefined, 777, 10]);
+  assert.equal(router.seen[1].raw, `lightning:${INVOICE_21K}`);
+  assert.equal(router.seen[4].raw, ARK);
+});
+
+test("an invoice with no route says what the swap can pay", async () => {
+  const fail = new Error(`no rail for: ${INVOICE_21K}`);
+  await assert.rejects(sender(fakeRouter({ fail }))({ address: INVOICE_21K, sats: 50000 }), {
+    status: 400,
+    message: "Lightning via Arkade swap can't pay this invoice (solver range: 1,000–25,000 sats; this network's invoices only). Use the Lightning tab instead.",
+  });
+  const offline = sender(fakeRouter({ fail }), { lightningRange: async () => { throw new Error("offline"); } });
+  await assert.rejects(offline({ address: INVOICE_21K, sats: 50000 }), {
+    status: 400,
+    message: "Lightning via Arkade swap can't pay this invoice (this network's invoices only). Use the Lightning tab instead.",
+  });
+});
+
+test("payment failures map to the status faucet-rs acts on", async () => {
+  const failing = (error) => sender(fakeRouter({ settled: async () => { throw error; } }));
+  for (const [error, status] of [
+    [new Error("Insufficient funds"), 409],
+    [new SwapPaymentFailedError("lightning", "refunded", { id: "s1" }), 422],
+  ]) {
+    await assert.rejects(failing(error)({ address: ARK, sats: 1 }), { status });
+  }
+  await assert.rejects(failing(new Error("boom"))({ address: ARK, sats: 1 }),
+    (e) => e.status === undefined && e.message === "boom");
+});
+
+test("a slow payment reports its in-flight status", async () => {
+  const send = sender(fakeRouter({ status: "sent", settled: () => new Promise(() => {}) }), { waitMs: 5 });
+  assert.deepEqual(await send({ address: ARK, sats: 1 }),
+    { rail: "ark", status: "sent", amount: 1, fee: 0, txid: undefined, swapId: undefined });
+});
+
+test("fetchLightningRange reads the lightning market's take-side bounds", async () => {
+  const fetchFn = async () => ({ json: async () => ({ markets: [
+    { quote_corridor: "onchain", min_quote_amount: "1", max_quote_amount: "2" },
+    { quote_corridor: "lightning", min_quote_amount: "1000", max_quote_amount: "25000" },
+  ] }) });
+  assert.equal(await fetchLightningRange("mutinynet", fetchFn), "1,000–25,000");
 });

@@ -1,9 +1,22 @@
+import { setTimeout as sleep } from "node:timers/promises";
 import { EventSource } from "eventsource";
-import { MnemonicIdentity, Wallet, Ramps, RestArkProvider, EsploraProvider } from "@arkade-os/sdk";
+import bolt11 from "light-bolt11-decoder";
+import {
+  MnemonicIdentity,
+  Wallet,
+  Ramps,
+  RestArkProvider,
+  EsploraProvider,
+  BIP21,
+  arkTarget,
+  btcTarget,
+  invoiceTarget,
+} from "@arkade-os/sdk";
 import {
   SQLiteWalletRepository,
   SQLiteContractRepository,
 } from "@arkade-os/sdk/repositories/sqlite";
+import { isSwapError, SwapPaymentFailedError, REGISTRY_URL } from "@arkade-os/swap";
 import { createNodeSqlExecutor } from "@arkade-os/swap/node";
 
 // The SDK uses Server-Sent Events for settlement updates; Node has no global EventSource.
@@ -72,4 +85,77 @@ export function createReplenisher({ wallet, config, shouldReplenish, requestOnch
     }
   }
   return { tick };
+}
+
+const UNRECOGNIZED =
+  "Paste an Arkade address (tark1…), a bitcoin address, a BOLT11 invoice, a Lightning address or a bitcoin: URI.";
+
+export class PayError extends Error {
+  constructor(status, message) {
+    super(message);
+    this.status = status;
+  }
+}
+
+function invoiceSats(invoice) {
+  try {
+    const msat = bolt11.decode(invoice).sections.find((s) => s.name === "amount")?.value;
+    return msat ? Number(BigInt(msat) / 1000n) : undefined;
+  } catch {
+    throw new PayError(400, UNRECOGNIZED);
+  }
+}
+
+// 4xx tells faucet-rs nothing left the wallet, so it releases the user's quota.
+function payFailure(e) {
+  if (/insufficient funds/i.test(e?.message) || isSwapError(e, "InsufficientFunds")) {
+    return new PayError(409, "The Arkade faucet wallet is refilling. Try again in a few minutes.");
+  }
+  if (isSwapError(e) || e instanceof SwapPaymentFailedError) {
+    return new PayError(422, `Payment failed, nothing was sent: ${e.message}`);
+  }
+  return e;
+}
+
+export async function fetchLightningRange(network, fetchFn = fetch) {
+  const { markets } = await (await fetchFn(REGISTRY_URL[network])).json();
+  const m = markets.find((x) => x.quote_corridor === "lightning");
+  const fmt = (n) => Number(n).toLocaleString("en-US");
+  return `${fmt(m.min_quote_amount)}–${fmt(m.max_quote_amount)}`;
+}
+
+export function createSender({ router, lightningRange, waitMs = 8000 }) {
+  return async function send({ address, sats }) {
+    const pasted = String(address ?? "").trim().replace(/^"|"$/g, "");
+    // QR codes upper-case invoices; bech32 is case-insensitive.
+    const raw = /^(lightning:)?ln/i.test(pasted) ? pasted.toLowerCase() : pasted;
+    const invoice = invoiceTarget(raw);
+    if (!invoice && !arkTarget(raw) && !btcTarget(raw)) throw new PayError(400, UNRECOGNIZED);
+    const max = Number(sats);
+    if (!(Number.isSafeInteger(max) && max > 0)) throw new PayError(400, "Enter an amount in sats.");
+    const pinned = BIP21.amountSats(raw) ?? (invoice && invoiceSats(invoice));
+    if (pinned > max) {
+      throw new PayError(400, `This destination asks for ${pinned} sats, more than the ${max} you entered.`);
+    }
+    let q;
+    try {
+      // The lightning rail refuses an explicit amount beside an amount-bearing invoice, even an equal one.
+      q = await router.route({ raw, amount: pinned === undefined ? max : undefined });
+    } catch (e) {
+      if (invoice && e?.message?.startsWith("no rail for")) {
+        const range = await lightningRange().catch(() => undefined);
+        throw new PayError(400, `Lightning via Arkade swap can't pay this invoice (${range ? `solver range: ${range} sats; ` : ""}this network's invoices only). Use the Lightning tab instead.`);
+      }
+      throw isSwapError(e) ? new PayError(400, e.message) : e;
+    }
+    try {
+      const handle = await q.send();
+      const settled = handle.settled();
+      settled.catch(() => {});
+      const { txid, swapId } = (await Promise.race([settled, sleep(waitMs, undefined, { ref: false })])) ?? {};
+      return { rail: q.railId, status: handle.status, amount: q.amount, fee: q.fee, txid, swapId };
+    } catch (e) {
+      throw payFailure(e);
+    }
+  };
 }
