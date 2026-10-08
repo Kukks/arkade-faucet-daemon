@@ -1,39 +1,27 @@
 import { EventSource } from "eventsource";
-import { DatabaseSync } from "node:sqlite";
-import { MnemonicIdentity, Wallet, Ramps } from "@arkade-os/sdk";
+import { MnemonicIdentity, Wallet, Ramps, RestArkProvider, EsploraProvider } from "@arkade-os/sdk";
 import {
   SQLiteWalletRepository,
   SQLiteContractRepository,
 } from "@arkade-os/sdk/repositories/sqlite";
+import { createNodeSqlExecutor } from "@arkade-os/swap/node";
 
 // The SDK uses Server-Sent Events for settlement updates; Node has no global EventSource.
 globalThis.EventSource ??= EventSource;
-
-// Wrap Node's built-in sqlite as the SQLExecutor the SDK's SQLite repositories expect
-// ({ run, get, all }). node:sqlite avoids a native better-sqlite3 build.
-function createSqlExecutor(dbPath) {
-  const db = new DatabaseSync(dbPath);
-  db.exec("PRAGMA journal_mode = WAL;");
-  return {
-    run: async (sql, params) => { db.prepare(sql).run(...(params ?? [])); },
-    get: async (sql, params) => db.prepare(sql).get(...(params ?? [])),
-    all: async (sql, params) => db.prepare(sql).all(...(params ?? [])),
-  };
-}
 
 export async function initWallet(config) {
   // mutinynet/testnet needs testnet derivation; mainnet identity vs mutinynet operator throws.
   const identity = MnemonicIdentity.fromMnemonic(config.mnemonic, { isMainnet: config.isMainnet });
   // Persist wallet + contract state on disk: an in-memory store would lose the daemon's
   // VTXO/sync state on every restart (and the SDK's default store is browser IndexedDB).
-  const executor = createSqlExecutor(config.dbPath);
+  const db = createNodeSqlExecutor(config.dbPath);
   return Wallet.create({
     identity,
-    arkServerUrl: config.arkServerUrl,
-    ...(config.esploraUrl ? { esploraUrl: config.esploraUrl } : {}),
+    arkProvider: new RestArkProvider(config.arkServerUrl),
+    ...(config.esploraUrl ? { onchainProvider: new EsploraProvider(config.esploraUrl) } : {}),
     storage: {
-      walletRepository: new SQLiteWalletRepository(executor),
-      contractRepository: new SQLiteContractRepository(executor),
+      walletRepository: new SQLiteWalletRepository(db),
+      contractRepository: new SQLiteContractRepository(db),
     },
   });
 }
@@ -46,7 +34,7 @@ export async function dispense({ wallet, address, sats, maxSend }) {
 }
 
 export async function onboard(wallet) {
-  const info = await wallet.arkProvider.getInfo();
+  const info = await wallet.getArkadeInfo();
   return new Ramps(wallet).onboard(info.fees);
 }
 
