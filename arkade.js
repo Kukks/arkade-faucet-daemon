@@ -97,29 +97,24 @@ export function createReplenisher({ wallet, config, shouldReplenish, requestOnch
 const UNRECOGNIZED =
   "Paste an Arkade address (tark1…), a bitcoin address, a BOLT11 invoice, a Lightning address or a bitcoin: URI.";
 
-export class PayError extends Error {
-  constructor(status, message) {
-    super(message);
-    this.status = status;
-  }
-}
+const fail = (status, message) => Object.assign(new Error(message), { status });
 
 function invoiceSats(invoice) {
   try {
     const msat = bolt11.decode(invoice).sections.find((s) => s.name === "amount")?.value;
     return msat ? Number(BigInt(msat) / 1000n) : undefined;
   } catch {
-    throw new PayError(400, UNRECOGNIZED);
+    throw fail(400, UNRECOGNIZED);
   }
 }
 
 // 4xx tells faucet-rs nothing left the wallet, so it releases the user's quota.
 function payFailure(e) {
   if (/insufficient funds/i.test(e?.message) || isSwapError(e, "InsufficientFunds")) {
-    return new PayError(409, "The Arkade faucet wallet is refilling. Try again in a few minutes.");
+    return fail(409, "The Arkade faucet wallet is refilling. Try again in a few minutes.");
   }
   if (isSwapError(e) || e instanceof SwapPaymentFailedError) {
-    return new PayError(422, `Payment failed, nothing was sent: ${e.message}`);
+    return fail(422, `Payment failed, nothing was sent: ${e.message}`);
   }
   return e;
 }
@@ -137,12 +132,12 @@ export function createSender({ router, lightningRange, waitMs = 8000 }) {
     // QR codes upper-case invoices; bech32 is case-insensitive.
     const raw = /^(lightning:)?ln/i.test(pasted) ? pasted.toLowerCase() : pasted;
     const invoice = invoiceTarget(raw);
-    if (!invoice && !arkTarget(raw) && !btcTarget(raw)) throw new PayError(400, UNRECOGNIZED);
+    if (!invoice && !arkTarget(raw) && !btcTarget(raw)) throw fail(400, UNRECOGNIZED);
     const max = Number(sats);
-    if (!(Number.isSafeInteger(max) && max > 0)) throw new PayError(400, "Enter an amount in sats.");
+    if (!(Number.isSafeInteger(max) && max > 0)) throw fail(400, "Enter an amount in sats.");
     const pinned = BIP21.amountSats(raw) ?? (invoice && invoiceSats(invoice));
     if (pinned > max) {
-      throw new PayError(400, `This destination asks for ${pinned} sats, more than the ${max} you entered.`);
+      throw fail(400, `This destination asks for ${pinned} sats, more than the ${max} you entered.`);
     }
     // The lightning rail refuses an explicit amount beside an amount-bearing invoice, even an equal one.
     const options = await router.options({ raw, amount: pinned === undefined ? max : undefined });
@@ -159,10 +154,10 @@ export function createSender({ router, lightningRange, waitMs = 8000 }) {
     if (!q && invoice) {
       const range = failure ? undefined : await lightningRange().catch(() => undefined);
       const why = failure?.message ?? `${range ? `solver range: ${range} sats; ` : ""}this network's invoices only`;
-      throw new PayError(400, `Lightning via Arkade swap can't pay this invoice (${why}). Use the Lightning tab instead.`);
+      throw fail(400, `Lightning via Arkade swap can't pay this invoice (${why}). Use the Lightning tab instead.`);
     }
     // Nothing has moved before send(), so every failure up to here is a 4xx.
-    if (!q) throw new PayError(400, `Can't pay this destination: ${failure?.message ?? "no route"}`);
+    if (!q) throw fail(400, `Can't pay this destination: ${failure?.message ?? "no route"}`);
     try {
       const handle = await q.send();
       const settled = handle.settled();
