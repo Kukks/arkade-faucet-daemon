@@ -2,21 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { ArkAddress } from "@arkade-os/sdk";
 import { SwapPaymentFailedError } from "@arkade-os/swap";
-import { dispense, shouldReplenish, createReplenisher, createSender, fetchLightningRange } from "./arkade.js";
-
-test("dispense rejects non-positive and over-cap amounts", async () => {
-  const wallet = { send: async () => "txid" };
-  await assert.rejects(() => dispense({ wallet, address: "tark1", sats: 0, maxSend: 100 }));
-  await assert.rejects(() => dispense({ wallet, address: "tark1", sats: 101, maxSend: 100 }));
-});
-
-test("dispense forwards address+amount and returns txid", async () => {
-  let got;
-  const wallet = { send: async (args) => { got = args; return "abc123"; } };
-  const txid = await dispense({ wallet, address: "tark1xyz", sats: 50, maxSend: 100 });
-  assert.equal(txid, "abc123");
-  assert.deepEqual(got, { address: "tark1xyz", amount: 50 });
-});
+import { shouldReplenish, createReplenisher, createSender, fetchLightningRange } from "./arkade.js";
 
 test("shouldReplenish: true below threshold, false when covered by available or inbound", () => {
   assert.equal(shouldReplenish({ available: 10, boardingTotal: 0, minBalance: 100 }), true);
@@ -75,14 +61,20 @@ const BTC = "tb1qw508d6qejxtdg4y5r3zarvary0c5xw7kxpjzsx";
 const INVOICE_21K = "lntbs210u1p4v0akwpp5y6mjspm2q4x0s6hrcl9kp49t4lthle5eu5sey9kqy82cfn3qy4ssdqqcqzzsxqyz5vqsp5myh3czujrt5egq0mruyynf8rlt9uhz92pcfwau3u0f7apgf46cqq9qxpqysgqzvtq8ps7hm33663qcpydka3vtjyvjkkapy45e0u6qhq9vyqc4j6qgf29aq2xx5c5pwrw8xqjudkgqjeh58z7c4h4mz2tzngfhvv6z5qpmjjlv4";
 const INVOICE_ANY = "lntbs1p4v0ak6pp5d22447fc026ehwgjk4smmyufj9m9zaeveymgpqztk4ml9mv2jzkqdqqcqzzsxqyz5vqsp59m5qfml256wpjnylse7a5jtx9kv2uxrshsupgyvsdyz49003pv6q9qxpqysgq7eh34tuju4mawsng34haasj0wwcehu3r8xaql4r68fljfgysmkfhevc00fkq0m7f50ze642eul2uxmtywljl4at6dnxguky7qgpyj4qpmjhalj";
 
-function fakeRouter({ railId = "ark", status = "settled", settled = async () => ({ railId, txid: "tx1" }), fail } = {}) {
+function fakeRouter({ rails = [{ railId: "ark" }], status = "settled", settled } = {}) {
   const seen = [];
   return {
     seen,
-    route: async (req) => {
+    options: async (req) => {
       seen.push(req);
-      if (fail) throw fail;
-      return { railId, amount: req.amount ?? 21000, fee: 0, send: async () => ({ status, settled }) };
+      return rails.map(({ railId, fail }) => ({
+        railId,
+        quote: async () => {
+          if (fail) throw fail;
+          const done = settled ?? (async () => ({ railId, txid: "tx1" }));
+          return { railId, amount: req.amount ?? 21000, fee: 0, send: async () => ({ status, settled: done }) };
+        },
+      }));
     },
   };
 }
@@ -124,15 +116,28 @@ test("a destination's own amount is paid when it fits under sats", async () => {
 });
 
 test("an invoice with no route says what the swap can pay", async () => {
-  const fail = new Error(`no rail for: ${INVOICE_21K}`);
-  await assert.rejects(sender(fakeRouter({ fail }))({ address: INVOICE_21K, sats: 50000 }), {
+  await assert.rejects(sender(fakeRouter({ rails: [] }))({ address: INVOICE_21K, sats: 50000 }), {
     status: 400,
     message: "Lightning via Arkade swap can't pay this invoice (solver range: 1,000–25,000 sats; this network's invoices only). Use the Lightning tab instead.",
   });
-  const offline = sender(fakeRouter({ fail }), { lightningRange: async () => { throw new Error("offline"); } });
+  const offline = sender(fakeRouter({ rails: [] }), { lightningRange: async () => { throw new Error("offline"); } });
   await assert.rejects(offline({ address: INVOICE_21K, sats: 50000 }), {
     status: 400,
     message: "Lightning via Arkade swap can't pay this invoice (this network's invoices only). Use the Lightning tab instead.",
+  });
+});
+
+test("a failing rail falls through to the next; when all fail nothing moved, so it is a 400", async () => {
+  const refusal = new Error("solver refused: exposure_cap");
+  const fallback = sender(fakeRouter({ rails: [{ railId: "onchain-swap", fail: refusal }, { railId: "onchain" }] }));
+  assert.equal((await fallback({ address: BTC, sats: 20000 })).rail, "onchain");
+  await assert.rejects(sender(fakeRouter({ rails: [{ railId: "lightning", fail: refusal }] }))({ address: INVOICE_21K, sats: 50000 }), {
+    status: 400,
+    message: "Lightning via Arkade swap can't pay this invoice (solver refused: exposure_cap). Use the Lightning tab instead.",
+  });
+  await assert.rejects(sender(fakeRouter({ rails: [{ railId: "onchain", fail: new Error("Invalid checksum") }] }))({ address: BTC, sats: 20000 }), {
+    status: 400,
+    message: "Can't pay this destination: Invalid checksum",
   });
 });
 

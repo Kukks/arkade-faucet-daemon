@@ -16,8 +16,15 @@ import {
   SQLiteWalletRepository,
   SQLiteContractRepository,
 } from "@arkade-os/sdk/repositories/sqlite";
-import { isSwapError, SwapPaymentFailedError, REGISTRY_URL } from "@arkade-os/swap";
+import {
+  createSwapClient,
+  createSwapPaymentRouter,
+  isSwapError,
+  SwapPaymentFailedError,
+  REGISTRY_URL,
+} from "@arkade-os/swap";
 import { createNodeSqlExecutor } from "@arkade-os/swap/node";
+import { SQLiteAssetSwapRepository } from "@arkade-os/swap/repositories/sqlite";
 
 // The SDK uses Server-Sent Events for settlement updates; Node has no global EventSource.
 globalThis.EventSource ??= EventSource;
@@ -28,7 +35,7 @@ export async function initWallet(config) {
   // Persist wallet + contract state on disk: an in-memory store would lose the daemon's
   // VTXO/sync state on every restart (and the SDK's default store is browser IndexedDB).
   const db = createNodeSqlExecutor(config.dbPath);
-  return Wallet.create({
+  const wallet = await Wallet.create({
     identity,
     arkProvider: new RestArkProvider(config.arkServerUrl),
     ...(config.esploraUrl ? { onchainProvider: new EsploraProvider(config.esploraUrl) } : {}),
@@ -37,13 +44,13 @@ export async function initWallet(config) {
       contractRepository: new SQLiteContractRepository(db),
     },
   });
-}
-
-export async function dispense({ wallet, address, sats, maxSend }) {
-  if (!Number.isInteger(sats) || sats <= 0) throw new Error("sats must be a positive integer");
-  if (sats > maxSend) throw new Error(`amount exceeds per-request cap of ${maxSend} sats`);
-  // SDK 0.4.39 confirmed: wallet.send({ address, amount }) -> txid (one Recipient).
-  return wallet.send({ address, amount: sats });
+  const swaps = createSwapClient({ wallet, repository: new SQLiteAssetSwapRepository(db) });
+  // The router's availability check never fetches markets; without a warm snapshot the swap rails stay hidden.
+  await swaps.markets().catch((e) => console.warn(`swap market discovery failed: ${e.message}`));
+  return {
+    wallet,
+    router: createSwapPaymentRouter(wallet, swaps, { claimFeeRateSatVb: config.claimFeeRateSatVb }),
+  };
 }
 
 export async function onboard(wallet) {
@@ -137,17 +144,25 @@ export function createSender({ router, lightningRange, waitMs = 8000 }) {
     if (pinned > max) {
       throw new PayError(400, `This destination asks for ${pinned} sats, more than the ${max} you entered.`);
     }
-    let q;
-    try {
-      // The lightning rail refuses an explicit amount beside an amount-bearing invoice, even an equal one.
-      q = await router.route({ raw, amount: pinned === undefined ? max : undefined });
-    } catch (e) {
-      if (invoice && e?.message?.startsWith("no rail for")) {
-        const range = await lightningRange().catch(() => undefined);
-        throw new PayError(400, `Lightning via Arkade swap can't pay this invoice (${range ? `solver range: ${range} sats; ` : ""}this network's invoices only). Use the Lightning tab instead.`);
+    // The lightning rail refuses an explicit amount beside an amount-bearing invoice, even an equal one.
+    const options = await router.options({ raw, amount: pinned === undefined ? max : undefined });
+    let q, failure;
+    // A rail whose quote fails (a solver at its exposure cap, say) falls through to the next one.
+    for (const option of options) {
+      try {
+        q = await option.quote();
+        break;
+      } catch (e) {
+        failure = e;
       }
-      throw isSwapError(e) ? new PayError(400, e.message) : e;
     }
+    if (!q && invoice) {
+      const range = failure ? undefined : await lightningRange().catch(() => undefined);
+      const why = failure?.message ?? `${range ? `solver range: ${range} sats; ` : ""}this network's invoices only`;
+      throw new PayError(400, `Lightning via Arkade swap can't pay this invoice (${why}). Use the Lightning tab instead.`);
+    }
+    // Nothing has moved before send(), so every failure up to here is a 4xx.
+    if (!q) throw new PayError(400, `Can't pay this destination: ${failure?.message ?? "no route"}`);
     try {
       const handle = await q.send();
       const settled = handle.settled();

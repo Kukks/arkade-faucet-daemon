@@ -1,18 +1,18 @@
 import { loadConfig } from "./config.js";
-import { initWallet, dispense, onboard, shouldReplenish, createReplenisher } from "./arkade.js";
+import { initWallet, createSender, fetchLightningRange, onboard, shouldReplenish, createReplenisher } from "./arkade.js";
 import { requestOnchain } from "./faucet.js";
 import { startServer } from "./server.js";
 
 const config = loadConfig();
-const wallet = await initWallet(config);
+const { wallet, router } = await initWallet(config);
 const log = (m) => console.log(`[arkade-faucet-daemon] ${m}`);
 log(`wallet ready: ${await wallet.getAddress()}`);
 if (config.internalToken) log("shared-secret gate ENABLED on POST /send");
 
+const { network } = await wallet.getArkadeInfo();
 startServer({
-  wallet,
   config,
-  dispense,
+  send: createSender({ router, lightningRange: () => fetchLightningRange(network) }),
   getAvailable: async () => (await wallet.getBalance()).available,
 });
 

@@ -17,7 +17,7 @@ test("loadConfig applies defaults and parses numbers", () => {
   assert.equal(c.arkServerUrl, "https://mutinynet.arkade.sh");
   assert.equal(c.isMainnet, false);
   assert.equal(typeof c.replenishAmount, "number");
-  assert.equal(typeof c.maxSend, "number");
+  assert.equal(c.claimFeeRateSatVb, 2);
 });
 
 test("loadConfig reads IS_MAINNET as a boolean (default false)", () => {
