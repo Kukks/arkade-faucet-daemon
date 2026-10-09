@@ -191,6 +191,7 @@ test("payment failures map to the status faucet-rs acts on", async () => {
   for (const error of [
     new SwapPaymentFailedError("lightning", "refunding", { id: "s1" }),
     new AcceptConflict("q1", "s1", ["give"]),
+    new SwapPaymentFailedError("lightning", "failed", { id: "s2", failure: "solver hit insufficient funds" }),
     new Error("boom"),
   ]) {
     await assert.rejects(failing(error)({ address: ARK, sats: 1 }), (e) => e.status === undefined);

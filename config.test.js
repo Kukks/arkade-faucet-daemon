@@ -36,3 +36,10 @@ test("faucetApi trailing slash is stripped", () => {
   const c = loadConfig({ ...base, FAUCET_API: "https://faucet.example/" });
   assert.equal(c.faucetApi, "https://faucet.example");
 });
+
+test("MAX_SEND must be a whole number of sats when set", () => {
+  assert.equal(loadConfig({ ...base, MAX_SEND: "1000000" }).maxSend, 1000000);
+  for (const MAX_SEND of ["abc", "-5", "1.5"]) {
+    assert.throws(() => loadConfig({ ...base, MAX_SEND }), /MAX_SEND/);
+  }
+});

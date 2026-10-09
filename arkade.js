@@ -20,7 +20,13 @@ import {
   SQLiteWalletRepository,
   SQLiteContractRepository,
 } from "@arkade-os/sdk/repositories/sqlite";
-import { createSwapClient, lightningRail, isSwapError, REGISTRY_URL } from "@arkade-os/swap";
+import {
+  createSwapClient,
+  lightningRail,
+  isSwapError,
+  SwapPaymentFailedError,
+  REGISTRY_URL,
+} from "@arkade-os/swap";
 import { createNodeSqlExecutor } from "@arkade-os/swap/node";
 import { SQLiteAssetSwapRepository } from "@arkade-os/swap/repositories/sqlite";
 
@@ -124,6 +130,8 @@ function invoiceSats(invoice) {
 // thrown before funding, except AcceptConflict, which sits on a persisted and possibly funded record;
 // it and a swap that fails after funding (refunding, needs_recovery) stay a 500.
 function payFailure(e) {
+  // A swap that failed after funding is ambiguous whatever its message says, so it never reaches a 4xx.
+  if (e instanceof SwapPaymentFailedError) return e;
   // "No vtxos available": coin selection found nothing spendable, e.g. while an exit holds them for its batch.
   if (/insufficient funds|no vtxos available/i.test(e?.message) || isSwapError(e, "InsufficientFunds")) {
     return fail(409, "The Arkade faucet wallet can't cover this right now. Try again in a few minutes.");

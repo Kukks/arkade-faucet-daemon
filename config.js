@@ -4,6 +4,13 @@ function required(env, key) {
   return v;
 }
 
+function optionalSats(env, key) {
+  if (!env[key]) return 0;
+  const sats = Number(env[key]);
+  if (!Number.isSafeInteger(sats) || sats < 0) throw new Error(`Invalid ${key}: expected whole sats, got ${env[key]}`);
+  return sats;
+}
+
 export function loadConfig(env = process.env) {
   return {
     port: Number(env.PORT ?? 8080),
@@ -22,7 +29,7 @@ export function loadConfig(env = process.env) {
     internalToken: env.INTERNAL_TOKEN ?? "",
     minBalance: Number(env.MIN_BALANCE ?? 100000),
     replenishAmount: Number(env.REPLENISH_AMOUNT ?? 1000000),
-    maxSend: Number(env.MAX_SEND ?? 0),
+    maxSend: optionalSats(env, "MAX_SEND"),
     allowedOrigin: env.ALLOWED_ORIGIN ?? "*",
     replenishIntervalMs: Number(env.REPLENISH_INTERVAL_MS ?? 30000),
   };
