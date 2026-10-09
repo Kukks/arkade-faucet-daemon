@@ -20,7 +20,6 @@ import {
   createSwapClient,
   createSwapPaymentRouter,
   isSwapError,
-  SwapPaymentFailedError,
   REGISTRY_URL,
 } from "@arkade-os/swap";
 import { createNodeSqlExecutor } from "@arkade-os/swap/node";
@@ -119,12 +118,13 @@ function invoiceSats(invoice) {
   }
 }
 
-// 4xx tells faucet-rs nothing left the wallet, so it releases the user's quota.
+// 4xx tells faucet-rs nothing left the wallet, so it releases the user's quota. Swap errors are
+// thrown before funding; a swap that fails after it (refunding, needs_recovery) stays a 500.
 function payFailure(e) {
   if (/insufficient funds/i.test(e?.message) || isSwapError(e, "InsufficientFunds")) {
     return fail(409, "The Arkade faucet wallet is refilling. Try again in a few minutes.");
   }
-  if (isSwapError(e) || e instanceof SwapPaymentFailedError) {
+  if (isSwapError(e)) {
     return fail(422, `Payment failed, nothing was sent: ${e.message}`);
   }
   return e;
@@ -176,7 +176,7 @@ export function createSender({ router, lightningRange, isMainnet = false, routeM
     try {
       const handle = await q.send();
       const settled = handle.settled();
-      settled.catch(() => {});
+      settled.catch((e) => console.error(`settlement failed (rail=${q.railId}): ${e?.message ?? e}`));
       const { txid, swapId } = (await Promise.race([settled, sleep(waitMs, undefined, { ref: false })])) ?? {};
       return { rail: q.railId, status: handle.status, amount: q.amount, fee: q.fee, txid, swapId };
     } catch (e) {

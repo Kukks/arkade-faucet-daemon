@@ -174,14 +174,10 @@ test("a destination on another network is refused before routing", async () => {
 
 test("payment failures map to the status faucet-rs acts on", async () => {
   const failing = (error) => sender(fakeRouter({ settled: async () => { throw error; } }));
-  for (const [error, status] of [
-    [new Error("Insufficient funds"), 409],
-    [new SwapPaymentFailedError("lightning", "refunded", { id: "s1" }), 422],
-  ]) {
-    await assert.rejects(failing(error)({ address: ARK, sats: 1 }), { status });
+  await assert.rejects(failing(new Error("Insufficient funds"))({ address: ARK, sats: 1 }), { status: 409 });
+  for (const error of [new SwapPaymentFailedError("lightning", "refunding", { id: "s1" }), new Error("boom")]) {
+    await assert.rejects(failing(error)({ address: ARK, sats: 1 }), (e) => e.status === undefined);
   }
-  await assert.rejects(failing(new Error("boom"))({ address: ARK, sats: 1 }),
-    (e) => e.status === undefined && e.message === "boom");
 });
 
 test("a slow payment reports its in-flight status", async () => {
