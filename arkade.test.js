@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { ArkAddress } from "@arkade-os/sdk";
-import { SwapPaymentFailedError } from "@arkade-os/swap";
+import { AcceptConflict, SwapPaymentFailedError } from "@arkade-os/swap";
 import { shouldReplenish, createReplenisher, createSender, fetchLightningRange } from "./arkade.js";
 
 test("shouldReplenish: true below threshold, false when covered by available or inbound", () => {
@@ -163,6 +163,17 @@ test("a rail that doesn't answer in time falls through; alone it is a 400", asyn
   });
 });
 
+test("an optional MAX_SEND backstop refuses larger requests before routing", async () => {
+  const router = fakeRouter();
+  const capped = sender(router, { maxSend: 1000 });
+  await assert.rejects(capped({ address: ARK, sats: 1001 }), {
+    status: 400,
+    message: "That's more than this faucet sends per request (1000 sats).",
+  });
+  assert.equal(router.seen.length, 0);
+  assert.equal((await capped({ address: ARK, sats: 1000 })).amount, 1000);
+});
+
 test("a destination on another network is refused before routing", async () => {
   const router = fakeRouter();
   const arkMainnet = new ArkAddress(new Uint8Array(32).fill(1), new Uint8Array(32).fill(2), "ark").encode();
@@ -177,7 +188,11 @@ test("payment failures map to the status faucet-rs acts on", async () => {
   for (const message of ["Insufficient funds", "No vtxos available after deducting fees"]) {
     await assert.rejects(failing(new Error(message))({ address: ARK, sats: 1 }), { status: 409 });
   }
-  for (const error of [new SwapPaymentFailedError("lightning", "refunding", { id: "s1" }), new Error("boom")]) {
+  for (const error of [
+    new SwapPaymentFailedError("lightning", "refunding", { id: "s1" }),
+    new AcceptConflict("q1", "s1", ["give"]),
+    new Error("boom"),
+  ]) {
     await assert.rejects(failing(error)({ address: ARK, sats: 1 }), (e) => e.status === undefined);
   }
 });

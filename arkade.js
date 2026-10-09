@@ -121,13 +121,14 @@ function invoiceSats(invoice) {
 }
 
 // 4xx tells faucet-rs nothing left the wallet, so it releases the user's quota. Swap errors are
-// thrown before funding; a swap that fails after it (refunding, needs_recovery) stays a 500.
+// thrown before funding, except AcceptConflict, which sits on a persisted and possibly funded record;
+// it and a swap that fails after funding (refunding, needs_recovery) stay a 500.
 function payFailure(e) {
   // "No vtxos available": coin selection found nothing spendable, e.g. while an exit holds them for its batch.
   if (/insufficient funds|no vtxos available/i.test(e?.message) || isSwapError(e, "InsufficientFunds")) {
     return fail(409, "The Arkade faucet wallet can't cover this right now. Try again in a few minutes.");
   }
-  if (isSwapError(e)) {
+  if (isSwapError(e) && !isSwapError(e, "AcceptConflict")) {
     return fail(422, `Payment failed, nothing was sent: ${e.message}`);
   }
   return e;
@@ -140,7 +141,7 @@ export async function fetchLightningRange(network, fetchFn = fetch) {
   return `${fmt(m.min_quote_amount)}–${fmt(m.max_quote_amount)}`;
 }
 
-export function createSender({ router, lightningRange, isMainnet = false, routeMs = 6000, waitMs = 8000 }) {
+export function createSender({ router, lightningRange, isMainnet = false, maxSend = 0, routeMs = 6000, waitMs = 8000 }) {
   return async function send({ address, sats }) {
     const pasted = String(address ?? "").trim().replace(/^"|"$/g, "");
     // QR codes upper-case invoices; bech32 is case-insensitive.
@@ -153,6 +154,7 @@ export function createSender({ router, lightningRange, isMainnet = false, routeM
     }
     const max = Number(sats);
     if (!(Number.isSafeInteger(max) && max > 0)) throw fail(400, "Enter an amount in sats.");
+    if (maxSend && max > maxSend) throw fail(400, `That's more than this faucet sends per request (${maxSend} sats).`);
     const pinned = BIP21.amountSats(raw) ?? (invoice && invoiceSats(invoice));
     if (pinned > max) throw tooMuch(pinned, max);
     // The lightning rail refuses an explicit amount beside an amount-bearing invoice, even an equal one.

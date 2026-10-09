@@ -94,6 +94,7 @@ disable the loop entirely (manual top-ups only).
 | `FAUCET_API_TOKEN`      | *(disabled)*                     | Full `Authorization` header value for the upstream faucet.            |
 | `MIN_BALANCE`           | `100000`                         | Replenish threshold (sats).                                           |
 | `REPLENISH_AMOUNT`      | `1000000`                        | Top-up size requested from upstream (sats).                           |
+| `MAX_SEND`              | *(no cap)*                       | Optional backstop: refuse requests above this many sats. The faucet backend's quota and per-request max apply first. |
 | `ALLOWED_ORIGIN`        | `*`                              | CORS. Set to the faucet backend origin if it calls in-browser.        |
 | `REPLENISH_INTERVAL_MS` | `30000`                          |                                                                       |
 
