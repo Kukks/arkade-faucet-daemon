@@ -17,7 +17,7 @@ test("loadConfig applies defaults and parses numbers", () => {
   assert.equal(c.arkServerUrl, "https://mutinynet.arkade.sh");
   assert.equal(c.isMainnet, false);
   assert.equal(typeof c.replenishAmount, "number");
-  assert.equal(typeof c.maxSend, "number");
+  assert.equal(c.maxSend, 0);
 });
 
 test("loadConfig reads IS_MAINNET as a boolean (default false)", () => {
@@ -35,4 +35,11 @@ test("faucet + internalToken default to empty when unset", () => {
 test("faucetApi trailing slash is stripped", () => {
   const c = loadConfig({ ...base, FAUCET_API: "https://faucet.example/" });
   assert.equal(c.faucetApi, "https://faucet.example");
+});
+
+test("MAX_SEND must be a whole number of sats when set", () => {
+  assert.equal(loadConfig({ ...base, MAX_SEND: "1000000" }).maxSend, 1000000);
+  for (const MAX_SEND of ["abc", "-5", "1.5"]) {
+    assert.throws(() => loadConfig({ ...base, MAX_SEND }), /MAX_SEND/);
+  }
 });

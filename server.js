@@ -23,13 +23,11 @@ export async function handle({ method, url, headers, body }, deps) {
         return { status: 401, headers: ch, body: "Unauthorized" };
       }
     }
-    const address = String(body?.address ?? "").replace(/^"|"$/g, "").trim();
-    const sats = Number(body?.sats);
     try {
-      const txid = await deps.dispense({ wallet: deps.wallet, address, sats, maxSend: deps.config.maxSend });
-      return { status: 200, headers: ch, body: { txid } };
+      return { status: 200, headers: ch, body: await deps.send(body ?? {}) };
     } catch (e) {
-      return { status: 400, headers: ch, body: e?.message ?? "send failed" };
+      if (!e?.status) console.error(e);
+      return { status: e?.status ?? 500, headers: ch, body: e?.message ?? "send failed" };
     }
   }
 
