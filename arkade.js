@@ -121,8 +121,9 @@ function invoiceSats(invoice) {
 // 4xx tells faucet-rs nothing left the wallet, so it releases the user's quota. Swap errors are
 // thrown before funding; a swap that fails after it (refunding, needs_recovery) stays a 500.
 function payFailure(e) {
-  if (/insufficient funds/i.test(e?.message) || isSwapError(e, "InsufficientFunds")) {
-    return fail(409, "The Arkade faucet wallet is refilling. Try again in a few minutes.");
+  // "No vtxos available": coin selection found nothing spendable, e.g. while an exit holds them for its batch.
+  if (/insufficient funds|no vtxos available/i.test(e?.message) || isSwapError(e, "InsufficientFunds")) {
+    return fail(409, "The Arkade faucet wallet can't cover this right now. Try again in a few minutes.");
   }
   if (isSwapError(e)) {
     return fail(422, `Payment failed, nothing was sent: ${e.message}`);
