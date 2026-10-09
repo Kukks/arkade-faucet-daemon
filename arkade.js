@@ -7,6 +7,10 @@ import {
   Ramps,
   RestArkProvider,
   EsploraProvider,
+  PaymentRouter,
+  arkRail,
+  onchainRail,
+  walletFeeSource,
   BIP21,
   arkTarget,
   btcTarget,
@@ -16,12 +20,7 @@ import {
   SQLiteWalletRepository,
   SQLiteContractRepository,
 } from "@arkade-os/sdk/repositories/sqlite";
-import {
-  createSwapClient,
-  createSwapPaymentRouter,
-  isSwapError,
-  REGISTRY_URL,
-} from "@arkade-os/swap";
+import { createSwapClient, lightningRail, isSwapError, REGISTRY_URL } from "@arkade-os/swap";
 import { createNodeSqlExecutor } from "@arkade-os/swap/node";
 import { SQLiteAssetSwapRepository } from "@arkade-os/swap/repositories/sqlite";
 
@@ -48,10 +47,13 @@ export async function initWallet(config) {
   await swaps.markets().catch((e) => console.warn(`swap market discovery failed: ${e.message}`));
   // Touching ready restores persisted swaps and resumes their claims and refunds after a restart.
   swaps.ready.catch((e) => console.warn(`swap restore failed: ${e.message}`));
-  return {
-    wallet,
-    router: createSwapPaymentRouter(wallet, swaps, { claimFeeRateSatVb: config.claimFeeRateSatVb }),
-  };
+  // No on-chain swap rail: on mutinynet its solver accepted and funded a swap it never filled, holding
+  // the send until refund, while the collaborative exit pays the same addresses at no fee.
+  const router = new PaymentRouter({ wallet, prefs: { priority: ["ark", "lightning", "onchain"] } })
+    .use(arkRail())
+    .use(lightningRail(swaps))
+    .use(onchainRail({ feeInfo: walletFeeSource(wallet) }));
+  return { wallet, router };
 }
 
 export async function onboard(wallet) {

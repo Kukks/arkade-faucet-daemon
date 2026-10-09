@@ -22,7 +22,6 @@ export function loadConfig(env = process.env) {
     internalToken: env.INTERNAL_TOKEN ?? "",
     minBalance: Number(env.MIN_BALANCE ?? 100000),
     replenishAmount: Number(env.REPLENISH_AMOUNT ?? 1000000),
-    claimFeeRateSatVb: Number(env.CLAIM_FEE_RATE_SAT_VB ?? 2),
     allowedOrigin: env.ALLOWED_ORIGIN ?? "*",
     replenishIntervalMs: Number(env.REPLENISH_INTERVAL_MS ?? 30000),
   };

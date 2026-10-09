@@ -94,7 +94,6 @@ disable the loop entirely (manual top-ups only).
 | `FAUCET_API_TOKEN`      | *(disabled)*                     | Full `Authorization` header value for the upstream faucet.            |
 | `MIN_BALANCE`           | `100000`                         | Replenish threshold (sats).                                           |
 | `REPLENISH_AMOUNT`      | `1000000`                        | Top-up size requested from upstream (sats).                           |
-| `CLAIM_FEE_RATE_SAT_VB` | `2`                              | Sat/vB for the on-chain claim of an Arkade → on-chain swap.           |
 | `ALLOWED_ORIGIN`        | `*`                              | CORS. Set to the faucet backend origin if it calls in-browser.        |
 | `REPLENISH_INTERVAL_MS` | `30000`                          |                                                                       |
 
