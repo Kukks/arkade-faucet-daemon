@@ -10,11 +10,14 @@ the end user with its own machinery, then forwards `{ address, sats }` here.
 ```
 browser ──► faucet backend (public, does auth) ──► arkade-faucet-daemon (internal)
                                                         │
-                                                        └── @arkade-os/sdk ──► ark server
+                                                        └── @arkade-os/sdk + @arkade-os/swap ──► Arkade operator, swap solvers
 ```
 
-`POST /send` accepts a plain `{ "address": "tark1…", "sats": 50000 }` body and returns
-`{ "txid": "…" }`. There is no user-level auth on the daemon — that belongs to the faucet
+`POST /send` accepts `{ "address": "…", "sats": 50000 }`. `address` is any destination: an Arkade
+address, a bitcoin address, a BOLT11 invoice or a `bitcoin:` URI. `sats` is the most to pay; a
+destination that carries its own amount is paid that amount when it is lower and refused when it is
+higher. Returns `{ rail, status, amount, fee, txid?, swapId? }`; a 4xx means nothing left the wallet.
+There is no user-level auth on the daemon — that belongs to the faucet
 backend. As defense in depth, set `INTERNAL_TOKEN` to require an `X-Internal-Token` header on
 `/send`.
 
@@ -22,7 +25,7 @@ backend. As defense in depth, set `INTERNAL_TOKEN` to require an `X-Internal-Tok
 
 | Method | Path    | Body / Response                                      |
 | ------ | ------- | ---------------------------------------------------- |
-| POST   | `/send` | `{address, sats}` → `{txid}` (400 on cap / SDK err)  |
+| POST   | `/send` | `{address, sats}` → `{rail, status, amount, fee, txid?, swapId?}` (4xx: nothing sent) |
 | GET    | `/info` | `{available}` (spendable sats)                       |
 
 ## Docker
@@ -91,7 +94,7 @@ disable the loop entirely (manual top-ups only).
 | `FAUCET_API_TOKEN`      | *(disabled)*                     | Full `Authorization` header value for the upstream faucet.            |
 | `MIN_BALANCE`           | `100000`                         | Replenish threshold (sats).                                           |
 | `REPLENISH_AMOUNT`      | `1000000`                        | Top-up size requested from upstream (sats).                           |
-| `MAX_SEND`              | `100000`                         | Per-request cap on `/send`.                                           |
+| `MAX_SEND`              | *(no cap)*                       | Optional backstop: refuse requests above this many sats. The faucet backend's quota and per-request max apply first. |
 | `ALLOWED_ORIGIN`        | `*`                              | CORS. Set to the faucet backend origin if it calls in-browser.        |
 | `REPLENISH_INTERVAL_MS` | `30000`                          |                                                                       |
 

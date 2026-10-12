@@ -2,10 +2,10 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { handle } from "./server.js";
 
-const baseConfig = { maxSend: 100000, allowedOrigin: "http://localhost:3000", internalToken: "" };
+const baseConfig = { allowedOrigin: "http://localhost:3000", internalToken: "" };
 const baseDeps = {
   config: baseConfig,
-  dispense: async ({ address, sats }) => `tx-${sats}-${address}`,
+  send: async ({ address, sats }) => ({ txid: `tx-${sats}-${address}` }),
   getAvailable: async () => 4242,
 };
 
@@ -35,11 +35,13 @@ test("POST /send with shared secret configured accepts on match", async () => {
   assert.deepEqual(r.body, { txid: "tx-50-tark1xyz" });
 });
 
-test("POST /send surfaces dispense errors as 400 text", async () => {
-  const deps = { ...baseDeps, dispense: async () => { throw new Error("amount exceeds per-request cap of 100000 sats"); } };
-  const r = await handle({ method: "POST", url: "/send", headers: {}, body: { address: "tark1", sats: 9 } }, deps);
-  assert.equal(r.status, 400);
-  assert.match(String(r.body), /exceeds per-request cap/);
+test("errors keep their status as text; unknown ones are 500", async () => {
+  const throwing = (e) => ({ ...baseDeps, send: async () => { throw e; } });
+  const known = await handle({ method: "POST", url: "/send", headers: {}, body: {} },
+    throwing(Object.assign(new Error("refilling"), { status: 409 })));
+  assert.deepEqual([known.status, known.body], [409, "refilling"]);
+  const unknown = await handle({ method: "POST", url: "/send", headers: {}, body: {} }, throwing(new Error("boom")));
+  assert.deepEqual([unknown.status, unknown.body], [500, "boom"]);
 });
 
 test("GET /info returns available balance", async () => {
